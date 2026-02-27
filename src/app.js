@@ -1,0 +1,64 @@
+'use strict';
+
+require('dotenv').config();
+
+const express    = require('express');
+const pool       = require('./db/pool');
+const authMiddleware = require('./middleware/auth');
+const posEventsRouter = require('./routes/posEvents');
+
+const app  = express();
+const PORT = process.env.PORT || 3000;
+
+// ── Global middleware ──────────────────────────────────────────────────────
+app.use(express.json({ limit: '1mb' }));
+
+// Log every incoming request
+app.use((req, _res, next) => {
+  console.log(`[${new Date().toISOString()}] ${req.method} ${req.path}`);
+  next();
+});
+
+// ── Public routes ──────────────────────────────────────────────────────────
+
+/**
+ * GET /health
+ * Lightweight liveness check. No auth required.
+ */
+app.get('/health', (_req, res) => {
+  res.status(200).json({ ok: true });
+});
+
+// ── Authenticated routes ───────────────────────────────────────────────────
+app.use('/api/pos', authMiddleware, posEventsRouter);
+
+// ── 404 catch-all ─────────────────────────────────────────────────────────
+app.use((_req, res) => {
+  res.status(404).json({ error: 'Not found' });
+});
+
+// ── Global error handler ───────────────────────────────────────────────────
+app.use((err, _req, res, _next) => {
+  console.error('[unhandled error]', err.message, err.stack);
+  res.status(500).json({ error: 'Internal server error' });
+});
+
+// ── Boot ───────────────────────────────────────────────────────────────────
+async function start() {
+  // Verify DB connectivity before accepting traffic
+  try {
+    const result = await pool.query('SELECT NOW() AS now');
+    console.log(`[db] Connected. Server time: ${result.rows[0].now}`);
+  } catch (err) {
+    console.error('[db] Failed to connect on startup:', err.message);
+    process.exit(1);
+  }
+
+  app.listen(PORT, () => {
+    console.log(`[server] Inventory Alive POS Ingest listening on port ${PORT}`);
+  });
+}
+
+start();
+
+module.exports = app; // export for testing

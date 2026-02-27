@@ -1,0 +1,23 @@
+{
+  "name": "inventory-alive-pos-ingest",
+  "version": "1.0.0",
+  "description": "Inventory Alive POS Ingest API — receives normalized POS events and persists them to Neon Postgres",
+  "main": "src/app.js",
+  "scripts": {
+    "start": "node src/app.js",
+    "dev": "nodemon src/app.js",
+    "migrate": "node src/db/migrate.js"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "pg": "^8.11.5",
+    "uuid": "^9.0.1"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.0"
+  }
+}
