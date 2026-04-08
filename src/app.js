@@ -6,7 +6,7 @@ const express    = require('express');
 const pool       = require('./db/pool');
 const authMiddleware = require('./middleware/auth');
 const posEventsRouter = require('./routes/posEvents');
-
+const checklistRouter = require('./routes/checklist');
 const app  = express();
 const PORT = process.env.PORT || 3000;
 
@@ -28,7 +28,20 @@ app.use((req, _res, next) => {
 app.get('/health', (_req, res) => {
   res.status(200).json({ ok: true });
 });
+// Attach db pool to every request
+app.use((req, _res, next) => { req.db = pool; next(); });
 
+// CORS for checklist (allow SiteGround)
+app.use((req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Headers', 'Content-Type');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  if (req.method === 'OPTIONS') return res.sendStatus(200);
+  next();
+});
+
+// ── Checklist sync (public) ───────────────────────────────────────────────
+app.use('/checklist', checklistRouter);
 // ── Authenticated routes ───────────────────────────────────────────────────
 app.use('/api/pos', authMiddleware, posEventsRouter);
 
