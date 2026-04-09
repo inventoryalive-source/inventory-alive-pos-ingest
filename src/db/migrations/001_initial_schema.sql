@@ -61,7 +61,7 @@ CREATE TABLE IF NOT EXISTS pos_events (
     total               NUMERIC(12, 4),
 
     -- Timestamps
-    occurred_at         TIMESTAMPTZ,
+    occurred_at         TIMESTAMPTZ NOT NULL,
     created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 
     -- Processing
@@ -104,3 +104,101 @@ CREATE TABLE IF NOT EXISTS pos_event_lines (
 
 CREATE INDEX IF NOT EXISTS idx_pos_event_lines_pos_event_id  ON pos_event_lines(pos_event_id);
 CREATE INDEX IF NOT EXISTS idx_pos_event_lines_external_item ON pos_event_lines(external_item_id);
+
+-- ---------------------------------------------------------------
+-- users
+-- ---------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS users (
+    id             UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+    email          TEXT        NOT NULL UNIQUE,
+    name           TEXT,
+    password_hash  TEXT,
+    created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- ---------------------------------------------------------------
+-- tenant_memberships
+-- ---------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tenant_memberships (
+    id         UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id  UUID        NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    user_id    UUID        NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    role       TEXT        NOT NULL,   -- e.g. 'owner', 'admin', 'member'
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    CONSTRAINT uq_tenant_memberships_tenant_user UNIQUE (tenant_id, user_id),
+    CONSTRAINT chk_tenant_memberships_role CHECK (role IN ('owner', 'admin', 'member'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_tenant_memberships_tenant_id ON tenant_memberships(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_tenant_memberships_user_id   ON tenant_memberships(user_id);
+
+-- ---------------------------------------------------------------
+-- inventory_items
+-- ---------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS inventory_items (
+    id                 UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id          UUID        NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    location_id        UUID        NOT NULL REFERENCES locations(id) ON DELETE CASCADE,
+    external_item_id   TEXT        NOT NULL,
+    name               TEXT,
+    sku                TEXT,
+    unit_cost          NUMERIC(12, 4),
+    quantity_on_hand   NUMERIC(10, 4) DEFAULT 0,
+    created_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    CONSTRAINT uq_inventory_items_tenant_external_item UNIQUE (tenant_id, external_item_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_inventory_items_tenant_id    ON inventory_items(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_inventory_items_location_id ON inventory_items(location_id);
+CREATE INDEX IF NOT EXISTS idx_inventory_items_sku         ON inventory_items(sku);
+
+-- ---------------------------------------------------------------
+-- inventory_events
+-- ---------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS inventory_events (
+    id                     UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id              UUID        NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    inventory_item_id      UUID        NOT NULL REFERENCES inventory_items(id) ON DELETE CASCADE,
+    event_type             TEXT        NOT NULL,   -- e.g. 'sale', 'restock', 'adjustment', 'void'
+    quantity_delta         NUMERIC(10, 4) NOT NULL,
+    quantity_after         NUMERIC(10, 4),
+    source_pos_event_id    UUID        REFERENCES pos_events(id) ON DELETE SET NULL,
+    occurred_at            TIMESTAMPTZ NOT NULL,
+    created_at             TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    CONSTRAINT chk_inventory_events_event_type CHECK (event_type IN ('sale', 'restock', 'adjustment', 'void', 'refund'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_inventory_events_tenant_id         ON inventory_events(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_inventory_events_inventory_item_id ON inventory_events(inventory_item_id);
+CREATE INDEX IF NOT EXISTS idx_inventory_events_occurred_at       ON inventory_events(occurred_at);
+
+-- ---------------------------------------------------------------
+-- audit_logs
+-- ---------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS audit_logs (
+    id             UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id      TEXT,
+    actor_id       TEXT,   -- user or system that made the change
+    action         TEXT        NOT NULL,   -- e.g. 'create', 'update', 'delete'
+    resource_type  TEXT        NOT NULL,   -- e.g. 'pos_event', 'inventory_item'
+    resource_id    TEXT,
+    payload        JSONB,   -- before/after snapshot
+    ip_address     TEXT,
+    created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_audit_logs_tenant_id      ON audit_logs(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_actor_id       ON audit_logs(actor_id);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_resource_type  ON audit_logs(resource_type);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_created_at     ON audit_logs(created_at);
+
+-- ---------------------------------------------------------------
+-- Column comments (decoupled ingestion)
+-- ---------------------------------------------------------------
+COMMENT ON COLUMN pos_events.tenant_id IS
+    'External tenant identifier as TEXT (not tenants.id UUID) so ingest can accept payloads before tenant rows exist; stays decoupled from core tenant registry.';
