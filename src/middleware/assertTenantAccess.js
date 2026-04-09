@@ -40,7 +40,7 @@ async function assertTenantAccess(req, res, next) {
 
     let decoded;
     try {
-      decoded = jwt.verify(token, secret);
+      decoded = jwt.verify(token, secret, { algorithms: ['HS256'] });
     } catch (err) {
       if (err.name === 'TokenExpiredError') {
         return res.status(401).json({ error: 'Token expired — please log in again' });
@@ -56,11 +56,9 @@ async function assertTenantAccess(req, res, next) {
     // ── Step 3: Resolve tenant_id ────────────────────────────────────
     // tenant_id can come from:
     //   a) Route param  → /api/tenants/:tenant_id/inventory
-    //   b) Query string → ?tenant_id=xxx
-    //   c) Token itself → decoded.tenant_id (for single-tenant tokens)
+    //   b) Token itself → decoded.tenant_id (for single-tenant tokens)
     const requestedTenantId =
       req.params.tenant_id ||
-      req.query.tenant_id ||
       decoded.tenant_id ||
       null;
 
