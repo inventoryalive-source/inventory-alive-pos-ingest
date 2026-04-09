@@ -3,8 +3,11 @@
 require('dotenv').config();
 
 const express    = require('express');
+const { ZodError } = require('zod');
 const pool       = require('./db/pool');
 const authMiddleware = require('./middleware/auth');
+const { validateRequest, validationErrorPayload } = require('./middleware/validate');
+const { emptyQuerySchema } = require('./schemas/common');
 const posEventsRouter = require('./routes/posEvents');
 const checklistRouter = require('./routes/checklist');
 const app  = express();
@@ -25,9 +28,13 @@ app.use((req, _res, next) => {
  * GET /health
  * Lightweight liveness check. No auth required.
  */
-app.get('/health', (_req, res) => {
-  res.status(200).json({ ok: true });
-});
+app.get(
+  '/health',
+  validateRequest({ query: emptyQuerySchema }),
+  (_req, res) => {
+    res.status(200).json({ ok: true });
+  }
+);
 // Attach db pool to every request
 app.use((req, _res, next) => { req.db = pool; next(); });
 
@@ -52,6 +59,9 @@ app.use((_req, res) => {
 
 // ── Global error handler ───────────────────────────────────────────────────
 app.use((err, _req, res, _next) => {
+  if (err instanceof ZodError) {
+    return res.status(400).json(validationErrorPayload(err));
+  }
   console.error('[unhandled error]', err.message, err.stack);
   res.status(500).json({ error: 'Internal server error' });
 });

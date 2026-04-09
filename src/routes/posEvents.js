@@ -3,7 +3,8 @@
 const express = require('express');
 const { v4: uuidv4 } = require('uuid');
 const pool = require('../db/pool');
-const { validatePosEventPayload } = require('../validators/posEvent');
+const { validateRequest } = require('../middleware/validate');
+const { posEventBodySchema } = require('../schemas/posEvent');
 
 const router = express.Router();
 
@@ -13,13 +14,7 @@ const router = express.Router();
  * Ingests a normalized POS event, stores it in pos_events + pos_event_lines.
  * Handles idempotency via UNIQUE(tenant_id, location_id, provider, external_event_id).
  */
-router.post('/events', async (req, res) => {
-  // ── 1. Validate ────────────────────────────────────────────────────────────
-  const errors = validatePosEventPayload(req.body);
-  if (errors.length > 0) {
-    return res.status(400).json({ error: 'Validation failed', details: errors });
-  }
-
+router.post('/events', validateRequest({ body: posEventBodySchema }), async (req, res) => {
   const { provider, tenant_id, location_id, event } = req.body;
   const {
     external_event_id,
