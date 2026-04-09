@@ -3,10 +3,41 @@
 const express = require('express');
 const { v4: uuidv4 } = require('uuid');
 const pool = require('../db/pool');
+const { ingestTenantScope } = require('../middleware/ingestTenantScope');
 const { validateRequest } = require('../middleware/validate');
+const { emptyQuerySchema } = require('../schemas/common');
 const { posEventBodySchema } = require('../schemas/posEvent');
 
 const router = express.Router();
+
+router.use(ingestTenantScope);
+
+/**
+ * GET /api/pos/events
+ *
+ * Lists recent POS events for the tenant named in x-tenant-id only.
+ */
+router.get(
+  '/events',
+  validateRequest({ query: emptyQuerySchema }),
+  async (req, res) => {
+    try {
+      const tenantId = req.ingestTenantId;
+      const result = await pool.query(
+        `SELECT id, tenant_id, location_id, provider, external_event_id, event_type, occurred_at, created_at
+         FROM pos_events
+         WHERE tenant_id = $1
+         ORDER BY created_at DESC
+         LIMIT 50`,
+        [tenantId]
+      );
+      return res.status(200).json({ events: result.rows });
+    } catch (err) {
+      console.error('[GET /api/pos/events] Error:', err.message, err.stack);
+      return res.status(500).json({ error: 'Internal server error' });
+    }
+  }
+);
 
 /**
  * POST /api/pos/events
@@ -16,6 +47,11 @@ const router = express.Router();
  */
 router.post('/events', validateRequest({ body: posEventBodySchema }), async (req, res) => {
   const { provider, tenant_id, location_id, event } = req.body;
+
+  if (tenant_id !== req.ingestTenantId) {
+    return res.status(403).json({ error: 'Access denied' });
+  }
+
   const {
     external_event_id,
     event_type,

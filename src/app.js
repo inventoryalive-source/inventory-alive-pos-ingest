@@ -5,7 +5,6 @@ require('dotenv').config();
 const express    = require('express');
 const { ZodError } = require('zod');
 const pool       = require('./db/pool');
-const authMiddleware = require('./middleware/auth');
 const { validateRequest, validationErrorPayload } = require('./middleware/validate');
 const { emptyQuerySchema } = require('./schemas/common');
 const posEventsRouter = require('./routes/posEvents');
@@ -16,11 +15,13 @@ const PORT = process.env.PORT || 3000;
 // ── Global middleware ──────────────────────────────────────────────────────
 app.use(express.json({ limit: '1mb' }));
 
-// Log every incoming request
-app.use((req, _res, next) => {
-  console.log(`[${new Date().toISOString()}] ${req.method} ${req.path}`);
-  next();
-});
+// Log every incoming request (skip in tests)
+if (process.env.NODE_ENV !== 'test') {
+  app.use((req, _res, next) => {
+    console.log(`[${new Date().toISOString()}] ${req.method} ${req.path}`);
+    next();
+  });
+}
 
 // ── Public routes ──────────────────────────────────────────────────────────
 
@@ -50,7 +51,7 @@ app.use((req, res, next) => {
 // ── Checklist sync (public) ───────────────────────────────────────────────
 app.use('/checklist', checklistRouter);
 // ── Authenticated routes ───────────────────────────────────────────────────
-app.use('/api/pos', authMiddleware, posEventsRouter);
+app.use('/api/pos', posEventsRouter);
 
 // ── 404 catch-all ─────────────────────────────────────────────────────────
 app.use((_req, res) => {
@@ -82,6 +83,8 @@ async function start() {
   });
 }
 
-start();
+if (require.main === module) {
+  start();
+}
 
 module.exports = app; // export for testing
