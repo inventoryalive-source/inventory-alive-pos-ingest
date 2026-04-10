@@ -133,7 +133,7 @@ CREATE TABLE IF NOT EXISTS tenant_memberships (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 
     CONSTRAINT uq_tenant_memberships_tenant_user UNIQUE (tenant_id, user_id),
-    CONSTRAINT chk_tenant_memberships_role CHECK (role IN ('owner', 'admin', 'member'))
+    CONSTRAINT chk_tenant_memberships_role CHECK (role IN ('platform_admin', 'tenant_admin', 'staff', 'read_only'))
 );
 
 CREATE INDEX IF NOT EXISTS idx_tenant_memberships_tenant_id ON tenant_memberships(tenant_id);
@@ -208,3 +208,41 @@ CREATE INDEX IF NOT EXISTS idx_audit_logs_created_at     ON audit_logs(created_a
 -- ---------------------------------------------------------------
 COMMENT ON COLUMN pos_events.tenant_id IS
     'External tenant identifier as TEXT (not tenants.id UUID) so ingest can accept payloads before tenant rows exist; stays decoupled from core tenant registry.';
+
+-- ---------------------------------------------------------------
+-- sku_mappings
+-- ---------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS sku_mappings (
+    id                 UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id          TEXT        NOT NULL,
+    external_item_id   TEXT        NOT NULL,   -- POS item ID
+    sku                TEXT        NOT NULL,   -- internal inventory SKU
+    provider           TEXT        NOT NULL,   -- e.g. 'toast', 'square'
+    created_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    CONSTRAINT uq_sku_mappings_tenant_provider_external_item
+        UNIQUE (tenant_id, provider, external_item_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_sku_mappings_tenant_id ON sku_mappings(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_sku_mappings_sku       ON sku_mappings(sku);
+
+-- ---------------------------------------------------------------
+-- scanner_usage
+-- ---------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS scanner_usage (
+    id            UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id     TEXT        NOT NULL,
+    period_start  TIMESTAMPTZ NOT NULL,   -- start of quota period
+    period_end    TIMESTAMPTZ NOT NULL,   -- end of quota period
+    scans_used    INTEGER     NOT NULL DEFAULT 0 CHECK (scans_used >= 0),
+    scans_quota   INTEGER     NOT NULL DEFAULT 100 CHECK (scans_quota > 0),   -- per-tenant limit
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    CONSTRAINT uq_scanner_usage_tenant_period_start
+        UNIQUE (tenant_id, period_start)
+);
+
+CREATE INDEX IF NOT EXISTS idx_scanner_usage_tenant_id ON scanner_usage(tenant_id);
