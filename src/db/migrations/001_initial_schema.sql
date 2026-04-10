@@ -16,6 +16,7 @@ CREATE TABLE IF NOT EXISTS tenants (
     id          UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
     external_id TEXT        NOT NULL UNIQUE,   -- e.g. "tnt_123"
     name        TEXT,
+    deleted_at  TIMESTAMPTZ,
     created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
@@ -30,6 +31,7 @@ CREATE TABLE IF NOT EXISTS locations (
     external_id TEXT        NOT NULL UNIQUE,   -- e.g. "loc_abc"
     tenant_id   UUID        REFERENCES tenants(id) ON DELETE CASCADE,
     name        TEXT,
+    deleted_at  TIMESTAMPTZ,
     created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
@@ -88,6 +90,7 @@ CREATE INDEX IF NOT EXISTS idx_pos_events_raw_event        ON pos_events USING G
 CREATE TABLE IF NOT EXISTS pos_event_lines (
     id                UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
     pos_event_id      UUID        NOT NULL REFERENCES pos_events(id) ON DELETE CASCADE,
+    tenant_id         TEXT        NOT NULL,
 
     external_line_id  TEXT        NOT NULL,
     external_item_id  TEXT,
@@ -103,6 +106,7 @@ CREATE TABLE IF NOT EXISTS pos_event_lines (
 );
 
 CREATE INDEX IF NOT EXISTS idx_pos_event_lines_pos_event_id  ON pos_event_lines(pos_event_id);
+CREATE INDEX IF NOT EXISTS idx_pos_event_lines_tenant_id     ON pos_event_lines(tenant_id);
 CREATE INDEX IF NOT EXISTS idx_pos_event_lines_external_item ON pos_event_lines(external_item_id);
 
 -- ---------------------------------------------------------------
@@ -147,6 +151,7 @@ CREATE TABLE IF NOT EXISTS inventory_items (
     sku                TEXT,
     unit_cost          NUMERIC(12, 4),
     quantity_on_hand   NUMERIC(10, 4) DEFAULT 0,
+    deleted_at         TIMESTAMPTZ,
     created_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 
