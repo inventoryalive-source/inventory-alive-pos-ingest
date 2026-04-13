@@ -14,21 +14,17 @@
 -- ---------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS tenants (
     id          UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
-    external_id TEXT        NOT NULL UNIQUE,   -- e.g. "tnt_123"
     name        TEXT,
     deleted_at  TIMESTAMPTZ,
     created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX IF NOT EXISTS idx_tenants_external_id ON tenants(external_id);
-
 -- ---------------------------------------------------------------
 -- locations
 -- ---------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS locations (
     id          UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
-    external_id TEXT        NOT NULL UNIQUE,   -- e.g. "loc_abc"
     tenant_id   UUID        REFERENCES tenants(id) ON DELETE CASCADE,
     name        TEXT,
     deleted_at  TIMESTAMPTZ,
@@ -36,7 +32,6 @@ CREATE TABLE IF NOT EXISTS locations (
     updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX IF NOT EXISTS idx_locations_external_id ON locations(external_id);
 CREATE INDEX IF NOT EXISTS idx_locations_tenant_id   ON locations(tenant_id);
 
 -- ---------------------------------------------------------------
