@@ -1,5 +1,6 @@
 'use strict';
 
+const crypto = require('crypto');
 const jwt = require('jsonwebtoken');
 
 /**
@@ -80,10 +81,22 @@ function parseTenantKeys() {
 
 function normalizeTenantHeader(raw) {
   if (typeof raw === 'string') return raw.trim();
-  if (Array.isArray(raw) && raw.length && typeof raw[0] === 'string') {
+  if (Array.isArray(raw)) {
+    // Multiple tenant headers are ambiguous and should be rejected.
+    if (raw.length !== 1 || typeof raw[0] !== 'string') {
+      return null;
+    }
     return raw[0].trim();
   }
   return '';
+}
+
+function secureEqual(a, b) {
+  if (typeof a !== 'string' || typeof b !== 'string') return false;
+  const left = Buffer.from(a, 'utf8');
+  const right = Buffer.from(b, 'utf8');
+  if (left.length !== right.length) return false;
+  return crypto.timingSafeEqual(left, right);
 }
 
 function verifyTenantCredential(req, tenantId) {
@@ -112,26 +125,27 @@ function verifyTenantCredential(req, tenantId) {
   const tenantKeys = parseTenantKeys();
   if (tenantKeys) {
     const provided = req.headers['x-ia-secret'];
-    if (provided === undefined || provided === null) {
+    if (typeof provided !== 'string' || provided.length === 0) {
       return { ok: false, status: 401, body: { error: 'Missing required header: x-ia-secret' } };
     }
     const expected = tenantKeys[tenantId];
-    if (expected === undefined) {
+    if (typeof expected !== 'string' || expected.length === 0) {
       return { ok: false, status: 401, body: { error: 'Invalid credentials' } };
     }
-    if (provided !== expected) {
+    if (!secureEqual(provided, expected)) {
       return { ok: false, status: 401, body: { error: 'Invalid x-ia-secret' } };
     }
     return { ok: true };
   }
 
-  if (process.env.NODE_ENV === 'production') {
+  const allowLegacyGlobalSecret = process.env.IA_ALLOW_LEGACY_GLOBAL_SECRET === 'true';
+  if (!allowLegacyGlobalSecret) {
     return {
       ok: false,
       status: 401,
       body: {
         error:
-          'Tenant-bound authentication required: set IA_INGEST_TENANT_KEYS or IA_INGEST_JWT_SECRET',
+          'Tenant-bound authentication required: set IA_INGEST_TENANT_KEYS or IA_INGEST_JWT_SECRET (or explicitly opt into legacy mode via IA_ALLOW_LEGACY_GLOBAL_SECRET=true)',
       },
     };
   }
@@ -147,10 +161,10 @@ function verifyTenantCredential(req, tenantId) {
   }
 
   const provided = req.headers['x-ia-secret'];
-  if (provided === undefined || provided === null) {
+  if (typeof provided !== 'string' || provided.length === 0) {
     return { ok: false, status: 401, body: { error: 'Missing required header: x-ia-secret' } };
   }
-  if (provided !== globalSecret) {
+  if (!secureEqual(provided, globalSecret)) {
     return { ok: false, status: 401, body: { error: 'Invalid x-ia-secret' } };
   }
   return { ok: true };
@@ -159,6 +173,10 @@ function verifyTenantCredential(req, tenantId) {
 function ingestTenantScope(req, res, next) {
   const rawHeader = req.headers['x-tenant-id'];
   const tenantId = normalizeTenantHeader(rawHeader);
+  if (tenantId === null) {
+    audit400(req, 'x-tenant-id header duplicated/ambiguous');
+    return res.status(400).json({ error: 'Invalid x-tenant-id header' });
+  }
 
   if (tenantId.length > MAX_TENANT_ID_HEADER_LENGTH) {
     audit400(req, 'x-tenant-id exceeds max length');
