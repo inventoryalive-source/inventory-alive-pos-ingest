@@ -46,8 +46,13 @@ function validPosEventBody(tenantId, externalEventId) {
 }
 
 describe('cross-tenant access (x-tenant-id vs body / DB scope)', () => {
+  const ORIGINAL_TENANT_KEYS = process.env.IA_INGEST_TENANT_KEYS;
+  const ORIGINAL_LEGACY_FLAG = process.env.IA_ALLOW_LEGACY_GLOBAL_SECRET;
+
   beforeEach(() => {
     jest.clearAllMocks();
+    process.env.IA_INGEST_TENANT_KEYS = ORIGINAL_TENANT_KEYS;
+    process.env.IA_ALLOW_LEGACY_GLOBAL_SECRET = ORIGINAL_LEGACY_FLAG;
   });
 
   describe('GET /api/pos/events', () => {
@@ -113,6 +118,19 @@ describe('cross-tenant access (x-tenant-id vs body / DB scope)', () => {
         expect.any(String),
         [TENANT_B]
       );
+    });
+
+    it('rejects global shared-secret mode unless explicitly enabled', async () => {
+      delete process.env.IA_INGEST_TENANT_KEYS;
+      delete process.env.IA_ALLOW_LEGACY_GLOBAL_SECRET;
+
+      const res = await request(app)
+        .get('/api/pos/events')
+        .set(authHeaders(TENANT_A));
+
+      expect(res.status).toBe(401);
+      expect(res.body.error).toMatch(/Tenant-bound authentication required/);
+      expect(pool.query).not.toHaveBeenCalled();
     });
   });
 
