@@ -2,6 +2,18 @@
 
 const { z } = require('zod');
 
+const posEventTypeValues = [
+  'sale',
+  'void',
+  'refund',
+  'exchange',
+  'comp',
+  'open_tab',
+  'other',
+];
+
+const posEventTypeEnum = z.enum(posEventTypeValues);
+
 const isoDateTimeString = z
   .string({ message: 'occurred_at must be a string' })
   .refine((s) => !Number.isNaN(Date.parse(s)), {
@@ -34,9 +46,8 @@ const eventSchema = z
       .max(100, 'external_event_id must be at most 100 characters'),
     event_type: z
       .string({ message: 'event_type must be a string' })
-      .trim()
-      .min(1, 'event_type must be a non-empty string')
-      .max(100, 'event_type must be at most 100 characters'),
+      .transform((s) => s.trim().toLowerCase())
+      .pipe(posEventTypeEnum),
     occurred_at: isoDateTimeString,
     external_order_id: z.union([z.string(), z.null()]).optional(),
     currency: z
@@ -63,11 +74,7 @@ const posEventBodySchema = z
       .trim()
       .min(1, 'provider must be a non-empty string')
       .max(100, 'provider must be at most 100 characters'),
-    tenant_id: z
-      .string({ message: 'tenant_id must be a string' })
-      .trim()
-      .min(1, 'tenant_id must be a non-empty string')
-      .max(100, 'tenant_id must be at most 100 characters'),
+    tenant_id: z.uuid({ message: 'tenant_id must be a valid UUID' }),
     location_id: z
       .string({ message: 'location_id must be a string' })
       .trim()

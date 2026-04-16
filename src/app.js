@@ -11,6 +11,7 @@ const { validateRequest, validationErrorPayload } = require('./middleware/valida
 const { emptyQuerySchema } = require('./schemas/common');
 const posEventsRouter = require('./routes/posEvents');
 const checklistRouter = require('./routes/checklist');
+const financeRouter = require('./routes/finance');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -159,6 +160,7 @@ app.use('/checklist', checklistRouter);
 // ── Authenticated routes ───────────────────────────────────────────────────
 // Auth is enforced by ingestTenantScope on the router (not authMiddleware).
 app.use('/api/pos', posEventsRouter);
+app.use('/api/finance', financeRouter);
 
 // ── 404 catch-all ─────────────────────────────────────────────────────────
 app.use((_req, res) => {

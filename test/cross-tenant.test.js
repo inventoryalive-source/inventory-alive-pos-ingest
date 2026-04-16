@@ -1,9 +1,13 @@
 'use strict';
 
 process.env.IA_INGEST_SECRET = 'test-ingest-secret';
+
+const TENANT_A = '11111111-1111-4111-8111-111111111111';
+const TENANT_B = '22222222-2222-4222-8222-222222222222';
+
 process.env.IA_INGEST_TENANT_KEYS = JSON.stringify({
-  tenant_A: 'test-ingest-secret',
-  tenant_B: 'test-ingest-secret',
+  [TENANT_A]: 'test-ingest-secret',
+  [TENANT_B]: 'test-ingest-secret',
 });
 
 jest.mock('../src/db/pool', () => ({
@@ -14,9 +18,6 @@ jest.mock('../src/db/pool', () => ({
 const request = require('supertest');
 const pool = require('../src/db/pool');
 const app = require('../src/app');
-
-const TENANT_A = 'tenant_A';
-const TENANT_B = 'tenant_B';
 
 function authHeaders(tenantId) {
   return {
@@ -45,6 +46,14 @@ function validPosEventBody(tenantId, externalEventId) {
   };
 }
 
+/** Minimal pg client mock for runWithTenantRls (BEGIN → set_config → … → COMMIT). */
+function rlsClientMock(queryImpl) {
+  return {
+    query: jest.fn((sql, params) => queryImpl(sql, params)),
+    release: jest.fn(),
+  };
+}
+
 describe('cross-tenant access (x-tenant-id vs body / DB scope)', () => {
   beforeEach(() => {
     jest.clearAllMocks();
@@ -52,23 +61,30 @@ describe('cross-tenant access (x-tenant-id vs body / DB scope)', () => {
 
   describe('GET /api/pos/events', () => {
     it('returns only rows scoped to the requesting tenant (tenant_A)', async () => {
-      pool.query.mockImplementation((sql, params) => {
-        expect(params[0]).toBe(TENANT_A);
-        return Promise.resolve({
-          rows: [
-            {
-              id: '00000000-0000-0000-0000-0000000000a1',
-              tenant_id: TENANT_A,
-              location_id: 'loc_1',
-              provider: 'toast',
-              external_event_id: 'ext-a',
-              event_type: 'SALE',
-              occurred_at: new Date().toISOString(),
-              created_at: new Date().toISOString(),
-            },
-          ],
-        });
-      });
+      const eventRow = {
+        id: '00000000-0000-0000-0000-0000000000a1',
+        tenant_id: TENANT_A,
+        location_id: 'loc_1',
+        provider: 'toast',
+        external_event_id: 'ext-a',
+        event_type: 'SALE',
+        occurred_at: new Date().toISOString(),
+        created_at: new Date().toISOString(),
+      };
+
+      pool.connect.mockResolvedValue(
+        rlsClientMock((sql, params) => {
+          if (String(sql).includes('set_config')) {
+            expect(params[0]).toBe(TENANT_A);
+            return Promise.resolve({ rows: [] });
+          }
+          if (String(sql).trim().startsWith('SELECT')) {
+            expect(params[0]).toBe(TENANT_A);
+            return Promise.resolve({ rows: [eventRow] });
+          }
+          return Promise.resolve({ rows: [] });
+        })
+      );
 
       const res = await request(app)
         .get('/api/pos/events')
@@ -77,31 +93,37 @@ describe('cross-tenant access (x-tenant-id vs body / DB scope)', () => {
       expect(res.status).toBe(200);
       expect(res.body.events).toHaveLength(1);
       expect(res.body.events[0].tenant_id).toBe(TENANT_A);
-      expect(pool.query).toHaveBeenCalledTimes(1);
-      const [, params] = pool.query.mock.calls[0];
-      expect(params[0]).toBe(TENANT_A);
+      expect(pool.connect).toHaveBeenCalledTimes(1);
     });
 
     it('does not return another tenant\'s data when using tenant_B', async () => {
-      pool.query.mockImplementation((_sql, params) => {
-        if (params[0] === TENANT_A) {
-          return Promise.resolve({
-            rows: [
-              {
-                id: '00000000-0000-0000-0000-0000000000a1',
-                tenant_id: TENANT_A,
-                location_id: 'loc_1',
-                provider: 'toast',
-                external_event_id: 'secret-a',
-                event_type: 'SALE',
-                occurred_at: new Date().toISOString(),
-                created_at: new Date().toISOString(),
-              },
-            ],
-          });
-        }
-        return Promise.resolve({ rows: [] });
-      });
+      pool.connect.mockResolvedValue(
+        rlsClientMock((sql, params) => {
+          if (String(sql).includes('set_config')) {
+            return Promise.resolve({ rows: [] });
+          }
+          if (String(sql).trim().startsWith('SELECT')) {
+            if (params[0] === TENANT_A) {
+              return Promise.resolve({
+                rows: [
+                  {
+                    id: '00000000-0000-0000-0000-0000000000a1',
+                    tenant_id: TENANT_A,
+                    location_id: 'loc_1',
+                    provider: 'toast',
+                    external_event_id: 'secret-a',
+                    event_type: 'SALE',
+                    occurred_at: new Date().toISOString(),
+                    created_at: new Date().toISOString(),
+                  },
+                ],
+              });
+            }
+            return Promise.resolve({ rows: [] });
+          }
+          return Promise.resolve({ rows: [] });
+        })
+      );
 
       const res = await request(app)
         .get('/api/pos/events')
@@ -109,10 +131,6 @@ describe('cross-tenant access (x-tenant-id vs body / DB scope)', () => {
 
       expect(res.status).toBe(200);
       expect(res.body.events).toEqual([]);
-      expect(pool.query).toHaveBeenCalledWith(
-        expect.any(String),
-        [TENANT_B]
-      );
     });
   });
 
@@ -132,17 +150,24 @@ describe('cross-tenant access (x-tenant-id vs body / DB scope)', () => {
 
     it('allows POST when header and body tenant_id match (tenant_A)', async () => {
       const mockClient = {
-        query: jest.fn(),
+        query: jest.fn((sql) => {
+          if (String(sql).includes('set_config')) {
+            return Promise.resolve({ rows: [] });
+          }
+          if (String(sql).includes('INSERT INTO pos_events')) {
+            return Promise.resolve({
+              rowCount: 1,
+              rows: [{ id: '00000000-0000-0000-0000-0000000000e1' }],
+            });
+          }
+          if (String(sql).includes('INSERT INTO pos_event_lines')) {
+            return Promise.resolve({ rowCount: 1, rows: [] });
+          }
+          return Promise.resolve({ rows: [] });
+        }),
         release: jest.fn(),
       };
-      mockClient.query
-        .mockResolvedValueOnce(undefined) // BEGIN
-        .mockResolvedValueOnce({
-          rowCount: 1,
-          rows: [{ id: '00000000-0000-0000-0000-0000000000e1' }],
-        }) // INSERT event
-        .mockResolvedValueOnce(undefined) // line insert
-        .mockResolvedValueOnce(undefined); // COMMIT
+
       pool.connect.mockResolvedValue(mockClient);
 
       const body = validPosEventBody(TENANT_A, 'evt-match-1');

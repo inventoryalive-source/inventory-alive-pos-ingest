@@ -1,0 +1,1 @@
+# Finance Alive — Monorepo Structure

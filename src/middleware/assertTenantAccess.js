@@ -1,6 +1,7 @@
 'use strict';
 
 const jwt = require('jsonwebtoken');
+const { validate: isUuid } = require('uuid');
 const pool = require('../db/pool');
 
 /**
@@ -13,8 +14,9 @@ const pool = require('../db/pool');
  * Flow:
  *   1. Extract Bearer token from Authorization header
  *   2. Verify token signature using JWT_SECRET
- *   3. Look up user in tenant_memberships to confirm they belong to this tenant
- *   4. Confirm their role is active and not expired
+ *   3. If token claims platform_admin: confirm in DB (users row + platform_admin membership)
+ *      Otherwise: look up user in tenant_memberships for the requested tenant
+ *   4. Reject soft-deleted users
  *   5. Attach user and tenant context to req for downstream use
  *   6. Call next() if all checks pass — otherwise 401 or 403
  *
@@ -62,8 +64,15 @@ async function assertTenantAccess(req, res, next) {
       decoded.tenant_id ||
       null;
 
-    // platform_admin can access all tenants — skip tenant check
+    // platform_admin in the JWT must still match DB (stale or forged tokens rejected)
     if (decoded.role === 'platform_admin') {
+      const { rows: adminRows } = await pool.query(
+        'SELECT public.user_is_platform_admin($1::uuid) AS ok',
+        [userId]
+      );
+      if (!adminRows[0]?.ok) {
+        return res.status(403).json({ error: 'Access denied' });
+      }
       req.user = {
         user_id:   userId,
         role:      'platform_admin',
@@ -77,14 +86,14 @@ async function assertTenantAccess(req, res, next) {
       return res.status(400).json({ error: 'tenant_id is required' });
     }
 
-    // ── Step 4: Confirm membership in tenant_memberships ────────────
+    if (!isUuid(requestedTenantId)) {
+      return res.status(400).json({ error: 'tenant_id must be a UUID' });
+    }
+
+    // ── Step 4: Confirm membership (SECURITY DEFINER bypasses RLS) ─
     const { rows } = await pool.query(
-      `SELECT tm.role, tm.tenant_id, u.deleted_at
-       FROM tenant_memberships tm
-       JOIN users u ON u.id = tm.user_id
-       WHERE tm.user_id   = $1
-         AND tm.tenant_id = $2
-       LIMIT 1`,
+      `SELECT role, tenant_id, deleted_at
+       FROM public.tenant_membership_for_user($1::uuid, $2::uuid)`,
       [userId, requestedTenantId]
     );
 

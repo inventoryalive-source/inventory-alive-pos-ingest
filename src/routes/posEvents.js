@@ -2,7 +2,7 @@
 
 const express = require('express');
 const { v4: uuidv4 } = require('uuid');
-const pool = require('../db/pool');
+const { runWithTenantRls } = require('../db/runWithTenantRls');
 const { ingestTenantScope } = require('../middleware/ingestTenantScope');
 const { validateRequest } = require('../middleware/validate');
 const { emptyQuerySchema } = require('../schemas/common');
@@ -23,13 +23,15 @@ router.get(
   async (req, res) => {
     try {
       const tenantId = req.ingestTenantId;
-      const result = await pool.query(
-        `SELECT id, tenant_id, location_id, provider, external_event_id, event_type, occurred_at, created_at
-         FROM pos_events
-         WHERE tenant_id = $1
-         ORDER BY created_at DESC
-         LIMIT 50`,
-        [tenantId]
+      const result = await runWithTenantRls(tenantId, (client) =>
+        client.query(
+          `SELECT id, tenant_id, location_id, provider, external_event_id, event_type, occurred_at, created_at
+           FROM pos_events
+           WHERE tenant_id = $1::uuid
+           ORDER BY created_at DESC
+           LIMIT 50`,
+          [tenantId]
+        )
       );
       return res.status(200).json({ events: result.rows });
     } catch (err) {
@@ -62,14 +64,14 @@ router.post('/events', validateRequest({ body: posEventBodySchema }), async (req
     totals,
   } = event;
 
-  const client = await pool.connect();
   try {
-    await client.query('BEGIN');
+    let duplicate = false;
+    let insertedEventId;
 
-    // ── 2. Attempt to insert pos_event ──────────────────────────────────────
-    const posEventId = uuidv4();
+    await runWithTenantRls(tenant_id, async (client) => {
+      const posEventId = uuidv4();
 
-    const insertEventSQL = `
+      const insertEventSQL = `
       INSERT INTO pos_events (
         id,
         tenant_id,
@@ -95,72 +97,70 @@ router.post('/events', validateRequest({ body: posEventBodySchema }), async (req
       RETURNING id
     `;
 
-    const eventResult = await client.query(insertEventSQL, [
-      posEventId,
-      tenant_id,
-      location_id,
-      provider,
-      external_event_id,
-      event_type,
-      external_order_id || null,
-      currency.toUpperCase(),
-      totals.subtotal,
-      totals.tax,
-      totals.tip,
-      totals.total,
-      occurred_at,
-      'pending',
-      JSON.stringify(req.body), // full original payload
-    ]);
+      const eventResult = await client.query(insertEventSQL, [
+        posEventId,
+        tenant_id,
+        location_id,
+        provider,
+        external_event_id,
+        event_type,
+        external_order_id || null,
+        currency.toUpperCase(),
+        totals.subtotal,
+        totals.tax,
+        totals.tip,
+        totals.total,
+        occurred_at,
+        'pending',
+        JSON.stringify(req.body),
+      ]);
 
-    // ── 3. Idempotency check ────────────────────────────────────────────────
-    if (eventResult.rowCount === 0) {
-      // Row already existed — duplicate event, do not re-insert lines
-      await client.query('ROLLBACK');
-      return res.status(200).json({ status: 'duplicate' });
-    }
+      if (eventResult.rowCount === 0) {
+        duplicate = true;
+        return;
+      }
 
-    const insertedEventId = eventResult.rows[0].id;
+      insertedEventId = eventResult.rows[0].id;
 
-    // ── 4. Insert line items ────────────────────────────────────────────────
-    const insertLineSQL = `
+      const insertLineSQL = `
       INSERT INTO pos_event_lines (
         id,
         pos_event_id,
+        tenant_id,
         external_line_id,
         external_item_id,
         name,
         quantity,
         unit_price
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
       ON CONFLICT ON CONSTRAINT uq_pos_event_lines_idempotency DO NOTHING
     `;
 
-    for (const line of line_items) {
-      await client.query(insertLineSQL, [
-        uuidv4(),
-        insertedEventId,
-        line.external_line_id,
-        line.external_item_id || null,
-        line.name || null,
-        line.quantity,
-        line.unit_price,
-      ]);
-    }
+      for (const line of line_items) {
+        await client.query(insertLineSQL, [
+          uuidv4(),
+          insertedEventId,
+          tenant_id,
+          line.external_line_id,
+          line.external_item_id || null,
+          line.name || null,
+          line.quantity,
+          line.unit_price,
+        ]);
+      }
+    });
 
-    await client.query('COMMIT');
+    if (duplicate) {
+      return res.status(200).json({ status: 'duplicate' });
+    }
 
     return res.status(200).json({
       status: 'received',
       pos_event_id: insertedEventId,
     });
-
   } catch (err) {
-    await client.query('ROLLBACK');
     console.error('[POST /api/pos/events] Error:', err.message, err.stack);
     return res.status(500).json({ error: 'Internal server error' });
-  } finally {
-    client.release();
   }
 });
 

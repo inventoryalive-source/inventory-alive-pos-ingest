@@ -40,14 +40,13 @@ CREATE INDEX IF NOT EXISTS idx_locations_tenant_id   ON locations(tenant_id);
 CREATE TABLE IF NOT EXISTS pos_events (
     id                  UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
 
-    -- Routing / source identifiers (kept as raw strings for decoupled ingestion)
-    tenant_id           TEXT        NOT NULL,
+    tenant_id           UUID        NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
     location_id         TEXT        NOT NULL,
     provider            TEXT        NOT NULL,   -- "toast", "square", etc.
 
     -- Event identifiers
     external_event_id   TEXT        NOT NULL,
-    event_type          TEXT        NOT NULL,   -- "SALE", "VOID", "REFUND", etc.
+    event_type          TEXT        NOT NULL,
     external_order_id   TEXT,
 
     -- Financials
@@ -68,6 +67,18 @@ CREATE TABLE IF NOT EXISTS pos_events (
     -- Full original payload for audit / reprocessing
     raw_event           JSONB       NOT NULL,
 
+    CONSTRAINT chk_pos_events_event_type CHECK (
+        event_type IN (
+            'SALE',
+            'VOID',
+            'REFUND',
+            'EXCHANGE',
+            'COMP',
+            'OPEN_TAB',
+            'OTHER'
+        )
+    ),
+
     -- Idempotency: one event per (tenant, location, provider, external id)
     CONSTRAINT uq_pos_events_idempotency
         UNIQUE (tenant_id, location_id, provider, external_event_id)
@@ -85,13 +96,13 @@ CREATE INDEX IF NOT EXISTS idx_pos_events_raw_event        ON pos_events USING G
 CREATE TABLE IF NOT EXISTS pos_event_lines (
     id                UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
     pos_event_id      UUID        NOT NULL REFERENCES pos_events(id) ON DELETE CASCADE,
-    tenant_id         TEXT        NOT NULL,
+    tenant_id         UUID        NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
 
     external_line_id  TEXT        NOT NULL,
     external_item_id  TEXT,
     name              TEXT,
-    quantity          NUMERIC(10, 4) NOT NULL DEFAULT 1,
-    unit_price        NUMERIC(12, 4) NOT NULL DEFAULT 0,
+    quantity          NUMERIC(10, 4) NOT NULL,
+    unit_price        NUMERIC(12, 4) NOT NULL,
     line_total        NUMERIC(12, 4) GENERATED ALWAYS AS (quantity * unit_price) STORED,
 
     created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -124,12 +135,15 @@ CREATE TABLE IF NOT EXISTS tenant_memberships (
     id         UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
     tenant_id  UUID        NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
     user_id    UUID        NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    role       TEXT        NOT NULL,   -- e.g. 'owner', 'admin', 'member'
+    role       TEXT        NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 
     CONSTRAINT uq_tenant_memberships_tenant_user UNIQUE (tenant_id, user_id),
     CONSTRAINT chk_tenant_memberships_role CHECK (role IN ('platform_admin', 'tenant_admin', 'staff', 'read_only'))
 );
+
+COMMENT ON COLUMN tenant_memberships.role IS
+    'Membership role; must be one of: platform_admin, tenant_admin, staff, read_only (see chk_tenant_memberships_role).';
 
 CREATE INDEX IF NOT EXISTS idx_tenant_memberships_tenant_id ON tenant_memberships(tenant_id);
 CREATE INDEX IF NOT EXISTS idx_tenant_memberships_user_id   ON tenant_memberships(user_id);
@@ -183,7 +197,7 @@ CREATE INDEX IF NOT EXISTS idx_inventory_events_occurred_at       ON inventory_e
 -- ---------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS audit_logs (
     id             UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
-    tenant_id      TEXT,
+    tenant_id      UUID        REFERENCES tenants(id) ON DELETE SET NULL,
     actor_id       TEXT,   -- user or system that made the change
     action         TEXT        NOT NULL,   -- e.g. 'create', 'update', 'delete'
     resource_type  TEXT        NOT NULL,   -- e.g. 'pos_event', 'inventory_item'
@@ -198,18 +212,15 @@ CREATE INDEX IF NOT EXISTS idx_audit_logs_actor_id       ON audit_logs(actor_id)
 CREATE INDEX IF NOT EXISTS idx_audit_logs_resource_type  ON audit_logs(resource_type);
 CREATE INDEX IF NOT EXISTS idx_audit_logs_created_at     ON audit_logs(created_at);
 
--- ---------------------------------------------------------------
--- Column comments (decoupled ingestion)
--- ---------------------------------------------------------------
 COMMENT ON COLUMN pos_events.tenant_id IS
-    'External tenant identifier as TEXT (not tenants.id UUID) so ingest can accept payloads before tenant rows exist; stays decoupled from core tenant registry.';
+    'Tenant registry UUID; matches tenants(id). Session variable app.current_tenant_id must match for RLS.';
 
 -- ---------------------------------------------------------------
 -- sku_mappings
 -- ---------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS sku_mappings (
     id                 UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
-    tenant_id          TEXT        NOT NULL,
+    tenant_id          UUID        NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
     external_item_id   TEXT        NOT NULL,   -- POS item ID
     sku                TEXT        NOT NULL,   -- internal inventory SKU
     provider           TEXT        NOT NULL,   -- e.g. 'toast', 'square'
@@ -228,13 +239,18 @@ CREATE INDEX IF NOT EXISTS idx_sku_mappings_sku       ON sku_mappings(sku);
 -- ---------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS scanner_usage (
     id            UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
-    tenant_id     TEXT        NOT NULL,
+    tenant_id     UUID        NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
     period_start  TIMESTAMPTZ NOT NULL,   -- start of quota period
     period_end    TIMESTAMPTZ NOT NULL,   -- end of quota period
     scans_used    INTEGER     NOT NULL DEFAULT 0 CHECK (scans_used >= 0),
     scans_quota   INTEGER     NOT NULL DEFAULT 100 CHECK (scans_quota > 0),   -- per-tenant limit
     created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    CONSTRAINT chk_scanner_usage_period_quota CHECK (
+        scans_used <= scans_quota
+        AND period_end > period_start
+    ),
 
     CONSTRAINT uq_scanner_usage_tenant_period_start
         UNIQUE (tenant_id, period_start)
