@@ -49,8 +49,9 @@ router.get(
  */
 router.post('/events', validateRequest({ body: posEventBodySchema }), async (req, res) => {
   const { provider, tenant_id, location_id, event } = req.body;
+  const tenantId = req.ingestTenantId;
 
-  if (tenant_id !== req.ingestTenantId) {
+  if (tenant_id !== tenantId) {
     return res.status(403).json({ error: 'Access denied' });
   }
 
@@ -68,7 +69,7 @@ router.post('/events', validateRequest({ body: posEventBodySchema }), async (req
     let duplicate = false;
     let insertedEventId;
 
-    await runWithTenantRls(tenant_id, async (client) => {
+    await runWithTenantRls(tenantId, async (client) => {
       const posEventId = uuidv4();
 
       const insertEventSQL = `
@@ -99,7 +100,7 @@ router.post('/events', validateRequest({ body: posEventBodySchema }), async (req
 
       const eventResult = await client.query(insertEventSQL, [
         posEventId,
-        tenant_id,
+        tenantId,
         location_id,
         provider,
         external_event_id,
@@ -140,7 +141,7 @@ router.post('/events', validateRequest({ body: posEventBodySchema }), async (req
         await client.query(insertLineSQL, [
           uuidv4(),
           insertedEventId,
-          tenant_id,
+          tenantId,
           line.external_line_id,
           line.external_item_id || null,
           line.name || null,

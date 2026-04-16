@@ -150,24 +150,18 @@ describe('cross-tenant access (x-tenant-id vs body / DB scope)', () => {
 
     it('allows POST when header and body tenant_id match (tenant_A)', async () => {
       const mockClient = {
-        query: jest.fn((sql) => {
-          if (String(sql).includes('set_config')) {
-            return Promise.resolve({ rows: [] });
-          }
-          if (String(sql).includes('INSERT INTO pos_events')) {
-            return Promise.resolve({
-              rowCount: 1,
-              rows: [{ id: '00000000-0000-0000-0000-0000000000e1' }],
-            });
-          }
-          if (String(sql).includes('INSERT INTO pos_event_lines')) {
-            return Promise.resolve({ rowCount: 1, rows: [] });
-          }
-          return Promise.resolve({ rows: [] });
-        }),
+        query: jest.fn(),
         release: jest.fn(),
       };
-
+      mockClient.query
+        .mockResolvedValueOnce(undefined) // BEGIN
+        .mockResolvedValueOnce({ rows: [] }) // set_config
+        .mockResolvedValueOnce({
+          rowCount: 1,
+          rows: [{ id: '00000000-0000-0000-0000-0000000000e1' }],
+        }) // INSERT event
+        .mockResolvedValueOnce(undefined) // line insert
+        .mockResolvedValueOnce(undefined); // COMMIT
       pool.connect.mockResolvedValue(mockClient);
 
       const body = validPosEventBody(TENANT_A, 'evt-match-1');
@@ -180,6 +174,10 @@ describe('cross-tenant access (x-tenant-id vs body / DB scope)', () => {
       expect(res.status).toBe(200);
       expect(res.body.status).toBe('received');
       expect(pool.connect).toHaveBeenCalled();
+      const insertCall = mockClient.query.mock.calls.find(([sql]) =>
+        typeof sql === 'string' && sql.includes('INSERT INTO pos_events')
+      );
+      expect(insertCall[1][1]).toBe(TENANT_A);
     });
   });
 });
